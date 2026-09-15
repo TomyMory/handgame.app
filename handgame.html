@@ -3,83 +3,28 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Apple Crush AR - Hand Tracking</title>
-    <!-- MediaPipeのハンドトラッキング・描画ライブラリを読み込み -->
+    <title>Apple Crush AR - Hard Mode</title>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
     <style>
-        body {
-            margin: 0;
-            background-color: #222;
-            color: white;
-            font-family: sans-serif;
-            text-align: center;
-        }
-        #game-container {
-            position: relative;
-            width: 640px;
-            height: 480px;
-            margin: 20px auto;
-            border: 4px solid #fff;
-            border-radius: 10px;
-            background-color: #000;
-            overflow: hidden;
-        }
-        video {
-            display: none;
-        }
-        canvas {
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            /* 鏡のように左右反転 */
-            transform: scaleX(-1);
-        }
-        .overlay {
-            position: absolute;
-            top: 0; left: 0; width: 100%; height: 100%;
-            background: rgba(0,0,0,0.8);
-            display: flex;
-            flex-direction: column;
-            justify-content: center;
-            align-items: center;
-            z-index: 20;
-        }
-        #ui-layer {
-            position: absolute;
-            top: 10px;
-            left: 10px;
-            right: 10px;
-            display: none;
-            justify-content: space-between;
-            font-size: 24px;
-            font-weight: bold;
-            z-index: 10;
-            text-shadow: 2px 2px 4px rgba(0,0,0,1);
-        }
-        button {
-            padding: 15px 30px;
-            font-size: 20px;
-            cursor: pointer;
-            background-color: #4CAF50;
-            color: white;
-            border: none;
-            border-radius: 5px;
-            margin-top: 20px;
-            transition: 0.2s;
-        }
+        body { margin: 0; background-color: #222; color: white; font-family: sans-serif; text-align: center; }
+        #game-container { position: relative; width: 640px; height: 480px; margin: 20px auto; border: 4px solid #fff; border-radius: 10px; background-color: #000; overflow: hidden; }
+        video { display: none; }
+        canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; transform: scaleX(-1); }
+        .overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); display: flex; flex-direction: column; justify-content: center; align-items: center; z-index: 20; }
+        #ui-layer { position: absolute; top: 10px; left: 10px; right: 10px; display: none; justify-content: space-between; font-size: 24px; font-weight: bold; z-index: 10; text-shadow: 2px 2px 4px rgba(0,0,0,1); }
+        /* リロードを促す警告UI */
+        #reload-warning { position: absolute; top: 50px; width: 100%; text-align: center; color: #ffeb3b; font-size: 20px; font-weight: bold; display: none; z-index: 10; text-shadow: 2px 2px 4px #000; }
+        button { padding: 15px 30px; font-size: 20px; cursor: pointer; background-color: #4CAF50; color: white; border: none; border-radius: 5px; margin-top: 20px; transition: 0.2s; }
         button:hover { background-color: #45a049; }
-        
         .step-text { font-size: 1.2rem; margin-bottom: 10px; padding: 0 20px; line-height: 1.5; }
     </style>
 </head>
 <body>
 
-    <h1>🍎 Apple Crush AR (Hand) 🍎</h1>
-    <p>画面に手をかざし、落ちてくるリンゴを「グー」で握りつぶそう！</p>
+    <h1>🍎 Apple Crush AR (Hard Mode) 🍎</h1>
+    <p>リンゴ(🍎)をグーで潰せ！ 栗(🌰)を潰すと減点。1回潰したら「パー」でリロード！</p>
 
     <div id="game-container">
         <video id="webcam" autoplay playsinline muted></video>
@@ -89,6 +34,7 @@
             <div>Score: <span id="score">0</span></div>
             <div>Time: <span id="time">30</span>s</div>
         </div>
+        <div id="reload-warning">✋ パーにしてリロード！ ✋</div>
 
         <div id="overlay-screen" class="overlay">
             <h2 id="overlay-title">AIモデルを読み込み中...</h2>
@@ -108,169 +54,181 @@
         const uiLayer = document.getElementById('ui-layer');
         const scoreEl = document.getElementById('score');
         const timeEl = document.getElementById('time');
+        const reloadWarning = document.getElementById('reload-warning');
 
-        // ゲーム変数の管理
         let gameState = 'loading'; 
         let score = 0;
         let timeLeft = 30;
-        let apples = [];
+        let items = []; // applesからitemsに変更（リンゴと栗が混ざるため）
         let gameTimer = null;
 
-        // トラッキング変数
         let currentHandRatio = 0; 
-        let openHandRatio = 0;   // パー（開いた手）の基準値
-        let closedHandRatio = 0; // グー（握った手）の基準値
+        let openHandRatio = 0;
+        let closedHandRatio = 0;
         let handPos = { x: 0, y: 0 };
         let isHandClosed = false;
+        
+        // ★ リロード（パー）状態の管理
+        let canCrush = true; // つぶせる状態かどうか（最初はTrue）
+        let wasHandClosedLastFrame = false; // 1フレーム前の手の状態
 
-        // --- 手のランドマークから「握り具合（比率）」を計算 ---
-        // 手首からの「手のひらの長さ」に対して、「指先までの長さ」がどれくらいあるか計算
         function calculateHandRatio(landmarks) {
-            const wrist = landmarks[0];        // 手首
-            const middleBase = landmarks[9];   // 中指の付け根
-            
-            // 手のひらのベース距離（カメラの遠近を吸収するため）
+            const wrist = landmarks[0];
+            const middleBase = landmarks[9];
             const palmDist = Math.hypot(wrist.x - middleBase.x, wrist.y - middleBase.y);
-            
-            // 4本の指先（人差し指、中指、薬指、小指）と手首の距離の平均を計算
             const tips = [8, 12, 16, 20];
             let tipSum = 0;
             tips.forEach(tip => {
                 tipSum += Math.hypot(wrist.x - landmarks[tip].x, wrist.y - landmarks[tip].y);
             });
             const avgTipDist = tipSum / tips.length;
-            
-            // 比率を返す（パーなら数値が大きく、グーなら数値が小さくなる）
             return avgTipDist / palmDist;
         }
 
-        // --- MediaPipe 毎フレームの処理 ---
         function onResults(results) {
             canvasCtx.save();
             canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
             canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
 
-            // 手が認識されているか
             if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
-                const landmarks = results.multiHandLandmarks[0]; // 1つ目の手を取得
-                
-                // 現在の握り具合（比率）を計算
+                const landmarks = results.multiHandLandmarks[0];
                 currentHandRatio = calculateHandRatio(landmarks);
-                
-                // 当たり判定の中心点を「中指の付け根（てのひらの中央付近）」に設定
                 handPos.x = landmarks[9].x * canvasElement.width;
                 handPos.y = landmarks[9].y * canvasElement.height;
 
-                // プレイ中の判定ロジック
                 if (gameState === 'playing') {
-                    // グーとパーの差分のうち、パーから60%以上閉じたら「グー（握った）」と判定
-                    // ※パーの時が数値が大きく、グーの時が数値が小さくなります
                     const threshold = closedHandRatio + (openHandRatio - closedHandRatio) * 0.4;
                     isHandClosed = currentHandRatio < threshold;
 
-                    // AIが認識している骨格を描画（握ると赤、開くと緑）
-                    const color = isHandClosed ? "#FF0000" : "#00FF00";
-                    drawConnectors(canvasCtx, landmarks, HAND_CONNECTIONS, {color: color, lineWidth: 5});
-                    drawLandmarks(canvasCtx, landmarks, {color: color, lineWidth: 2, radius: 3});
+                    // ★ リロード判定ロジック
+                    if (!isHandClosed) {
+                        // 手を開いた（パーになった）らリロード完了
+                        canCrush = true;
+                        reloadWarning.style.display = 'none';
+                    }
 
-                    // 手のひらの中心（当たり判定ポイント）に円を描画
+                    // 骨格の色を変更（つぶせる時は緑、リロード待ちは黄色、握っている時は赤）
+                    let skeletonColor = "#00FF00"; // デフォルト（開いていて、つぶせる）
+                    if (isHandClosed && canCrush) skeletonColor = "#FF0000"; // 正しく握った瞬間
+                    if (isHandClosed && !canCrush) skeletonColor = "#FFFF00"; // リロードせずに握りっぱなし
+
+                    drawConnectors(canvasCtx, landmarks, HAND_CONNECTIONS, {color: skeletonColor, lineWidth: 5});
+                    drawLandmarks(canvasCtx, landmarks, {color: skeletonColor, lineWidth: 2, radius: 3});
+
+                    // 手のひらの当たり判定円
                     canvasCtx.beginPath();
                     canvasCtx.arc(handPos.x, handPos.y, 40, 0, 2 * Math.PI);
                     canvasCtx.fillStyle = isHandClosed ? "rgba(255, 0, 0, 0.4)" : "rgba(0, 255, 0, 0.4)";
                     canvasCtx.fill();
 
-                    // リンゴとの当たり判定
-                    if (isHandClosed) {
+                    // ★ アクション起動の条件変更
+                    // 「現在握っている」かつ「前回は開いていた（新規の握り）」かつ「リロード済み」の場合のみ実行
+                    if (isHandClosed && !wasHandClosedLastFrame && canCrush) {
                         checkCrush();
+                        canCrush = false; // 1回アクションを起こしたらリロード必須にする
+                    } else if (isHandClosed && !canCrush) {
+                        // 握りっぱなしの場合は警告を出す
+                        reloadWarning.style.display = 'block';
                     }
+
+                    wasHandClosedLastFrame = isHandClosed; // 状態を保存
                 } else {
-                    // キャリブレーション中の骨格描画（青）
                     drawConnectors(canvasCtx, landmarks, HAND_CONNECTIONS, {color: "#00a8ff", lineWidth: 5});
                     drawLandmarks(canvasCtx, landmarks, {color: "#00a8ff", lineWidth: 2});
                 }
+            } else {
+                // 手が認識されていない時は状態をリセット
+                wasHandClosedLastFrame = false;
             }
 
-            // リンゴの描画と移動
             if (gameState === 'playing') {
-                updateAndDrawApples();
+                updateAndDrawItems();
             }
 
             canvasCtx.restore();
         }
 
-        // --- 当たり判定（握りつぶす動作） ---
+        // --- 当たり判定 ---
         function checkCrush() {
-            apples.forEach(apple => {
-                if (apple.state === 'falling') {
-                    const dist = Math.hypot(apple.x - handPos.x, apple.y - handPos.y);
-                    if (dist < 60) { // 手のひらとリンゴの距離が近い場合
-                        apple.state = 'crushed';
-                        score++;
+            items.forEach(item => {
+                if (item.state === 'falling') {
+                    const dist = Math.hypot(item.x - handPos.x, item.y - handPos.y);
+                    if (dist < 60) {
+                        item.state = 'crushed';
+                        
+                        // ★ アイテムの種類による得点計算
+                        if (item.type === 'apple') {
+                            score++; // リンゴは +1点
+                        } else if (item.type === 'chestnut') {
+                            score--; // 栗は -1点
+                        }
+                        
                         scoreEl.innerText = score;
                     }
                 }
             });
         }
 
-        // --- リンゴの管理 ---
-        function spawnApple() {
+        // --- アイテムの生成と管理 ---
+        function spawnItem() {
             if (gameState !== 'playing') return;
-            apples.push({
+            
+            // ★ ランダム要素の追加
+            const isChestnut = Math.random() < 0.2; // 20%の確率で栗になる
+            const type = isChestnut ? 'chestnut' : 'apple';
+            
+            // スピードをランダムに（速いものも混ぜる: 2.0 〜 7.0）
+            const speed = Math.random() * 5 + 2; 
+
+            items.push({
                 x: Math.random() * (canvasElement.width - 100) + 50,
                 y: -40,
-                speed: Math.random() * 3 + 2,
+                speed: speed,
+                type: type,
                 state: 'falling'
             });
-            setTimeout(spawnApple, Math.random() * 800 + 600);
+            
+            setTimeout(spawnItem, Math.random() * 700 + 400); // 湧くスピードも少し早めに
         }
 
-        function updateAndDrawApples() {
-            for (let i = apples.length - 1; i >= 0; i--) {
-                let p = apples[i];
+        function updateAndDrawItems() {
+            for (let i = items.length - 1; i >= 0; i--) {
+                let p = items[i];
                 if (p.state === 'falling') {
                     p.y += p.speed;
                     canvasCtx.font = "50px sans-serif";
-                    canvasCtx.fillText("🍎", p.x - 25, p.y + 20);
-                    if (p.y > canvasElement.height + 50) apples.splice(i, 1);
+                    // 種類に応じてアイコンを変える
+                    const icon = p.type === 'apple' ? "🍎" : "🌰";
+                    canvasCtx.fillText(icon, p.x - 25, p.y + 20);
+                    if (p.y > canvasElement.height + 50) items.splice(i, 1);
                 } else if (p.state === 'crushed') {
                     canvasCtx.font = "40px sans-serif";
-                    canvasCtx.fillText("💥", p.x - 20, p.y + 15);
-                    p.alpha = (p.alpha || 1) - 0.1; // フェードアウト
-                    if (p.alpha <= 0) apples.splice(i, 1);
+                    // 種類に応じてエフェクトを変える
+                    const effect = p.type === 'apple' ? "💥" : "💀";
+                    canvasCtx.fillText(effect, p.x - 20, p.y + 15);
+                    p.alpha = (p.alpha || 1) - 0.1;
+                    if (p.alpha <= 0) items.splice(i, 1);
                 }
             }
         }
 
-        // --- ボタンが押されたときの状態遷移（フロー進行） ---
+        // --- 以下、ボタン処理やMediaPipeの初期化（前コードと同じ） ---
         actionBtn.addEventListener('click', () => {
             if (gameState === 'loading_done') {
-                // ステップ1: パーを記録
                 gameState = 'calib_open';
                 overlayTitle.innerText = "ステップ 1/2";
                 overlayDesc.innerHTML = "カメラに手を開いて（パー）向け、<br>画面に青い線（骨格）が出たらボタンを押してください。";
                 actionBtn.innerText = "パーの状態で記録";
-            
             } else if (gameState === 'calib_open') {
-                // パーの値を記録
-                if (currentHandRatio === 0) {
-                    alert("手が認識されていません。カメラに手を向けてください。");
-                    return;
-                }
+                if (currentHandRatio === 0) { alert("手が認識されていません。カメラに手を向けてください。"); return; }
                 openHandRatio = currentHandRatio;
                 gameState = 'calib_close';
                 overlayTitle.innerText = "ステップ 2/2";
                 overlayDesc.innerHTML = "次に、手をギュッと握り（グー）、<br>その状態でボタンを押してください。";
                 actionBtn.innerText = "グーの状態で記録";
-            
             } else if (gameState === 'calib_close') {
-                // グーの値を記録
-                if (currentHandRatio === 0) {
-                    alert("手が認識されていません。カメラに手を向けてください。");
-                    return;
-                }
+                if (currentHandRatio === 0) { alert("手が認識されていません。カメラに手を向けてください。"); return; }
                 closedHandRatio = currentHandRatio;
-                
-                // エラー回避（パーよりグーの方が数値が大きくなってしまった場合など）
                 if (openHandRatio <= closedHandRatio) {
                     alert("うまく認識できませんでした。もう一度パーからやり直してください。");
                     gameState = 'loading_done';
@@ -279,29 +237,29 @@
                     actionBtn.innerText = "次へ";
                     return;
                 }
-
                 gameState = 'ready';
                 overlayTitle.innerText = "準備完了！";
-                overlayDesc.innerText = "リンゴの場所で手を握って（グー）つぶしてください！";
+                overlayDesc.innerText = "リンゴは潰し、栗は避けろ！ 1回潰したら「パー」でリロードだ！";
                 actionBtn.innerText = "ゲームスタート";
-            
             } else if (gameState === 'ready' || gameState === 'end') {
                 startGame();
             }
         });
 
-        // --- ゲームの開始処理 ---
         function startGame() {
             gameState = 'playing';
             overlayScreen.style.display = 'none';
             uiLayer.style.display = 'flex';
             score = 0;
             timeLeft = 30;
-            apples = [];
+            items = [];
+            canCrush = true;
+            wasHandClosedLastFrame = false;
+            reloadWarning.style.display = 'none';
             scoreEl.innerText = score;
             timeEl.innerText = timeLeft;
 
-            spawnApple();
+            spawnItem();
 
             gameTimer = setInterval(() => {
                 timeLeft--;
@@ -316,31 +274,22 @@
         function endGame() {
             gameState = 'end';
             uiLayer.style.display = 'none';
+            reloadWarning.style.display = 'none';
             overlayScreen.style.display = 'flex';
             overlayTitle.innerText = "タイムアップ！";
-            overlayDesc.innerText = `あなたのスコア: ${score}個`;
+            overlayDesc.innerText = `あなたのスコア: ${score}点`;
             actionBtn.innerText = "もう一度遊ぶ";
         }
 
-        // --- MediaPipe Hands の初期化 ---
         const hands = new Hands({locateFile: (file) => {
             return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
         }});
-        hands.setOptions({
-            maxNumHands: 1, // 1つの手だけ認識
-            modelComplexity: 1,
-            minDetectionConfidence: 0.5,
-            minTrackingConfidence: 0.5
-        });
+        hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
         hands.onResults(onResults);
 
-        // --- カメラのセットアップ ---
         const camera = new Camera(videoElement, {
-            onFrame: async () => {
-                await hands.send({image: videoElement});
-            },
-            width: 640,
-            height: 480
+            onFrame: async () => { await hands.send({image: videoElement}); },
+            width: 640, height: 480
         });
 
         camera.start().then(() => {
@@ -348,9 +297,7 @@
             overlayTitle.innerText = "カメラの接続に成功しました";
             overlayDesc.innerText = "まずは、あなたの手の「パー」と「グー」を学習させます。";
             actionBtn.style.display = 'block';
-        }).catch(err => {
-            alert("カメラの起動に失敗しました。権限を確認してください。");
-        });
+        }).catch(err => { alert("カメラの起動に失敗しました。権限を確認してください。"); });
 
     </script>
 </body>

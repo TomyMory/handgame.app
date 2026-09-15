@@ -3,10 +3,11 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Apple Bite AR</title>
-    <!-- MediaPipeの顔認識ライブラリを読み込み -->
+    <title>Apple Crush AR - Hand Tracking</title>
+    <!-- MediaPipeのハンドトラッキング・描画ライブラリを読み込み -->
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
     <style>
         body {
             margin: 0;
@@ -26,7 +27,7 @@
             overflow: hidden;
         }
         video {
-            display: none; /* 映像はキャンバスに描画するので隠す */
+            display: none;
         }
         canvas {
             position: absolute;
@@ -52,7 +53,7 @@
             top: 10px;
             left: 10px;
             right: 10px;
-            display: none; /* ゲーム中のみ表示 */
+            display: none;
             justify-content: space-between;
             font-size: 24px;
             font-weight: bold;
@@ -63,23 +64,22 @@
             padding: 15px 30px;
             font-size: 20px;
             cursor: pointer;
-            background-color: #e74c3c;
+            background-color: #4CAF50;
             color: white;
             border: none;
             border-radius: 5px;
             margin-top: 20px;
             transition: 0.2s;
         }
-        button:hover { background-color: #c0392b; }
-        button:disabled { background-color: #7f8c8d; cursor: not-allowed; }
+        button:hover { background-color: #45a049; }
         
-        .step-text { font-size: 1.2rem; margin-bottom: 10px; padding: 0 20px; }
+        .step-text { font-size: 1.2rem; margin-bottom: 10px; padding: 0 20px; line-height: 1.5; }
     </style>
 </head>
 <body>
 
-    <h1>🍏 Apple Bite AR 🍏</h1>
-    <p>落ちてくるリンゴを、実際に口を開けて食べよう！</p>
+    <h1>🍎 Apple Crush AR (Hand) 🍎</h1>
+    <p>画面に手をかざし、落ちてくるリンゴを「グー」で握りつぶそう！</p>
 
     <div id="game-container">
         <video id="webcam" autoplay playsinline muted></video>
@@ -90,7 +90,6 @@
             <div>Time: <span id="time">30</span>s</div>
         </div>
 
-        <!-- 状態を切り替えるオーバーレイ画面 -->
         <div id="overlay-screen" class="overlay">
             <h2 id="overlay-title">AIモデルを読み込み中...</h2>
             <p id="overlay-desc" class="step-text">カメラを許可し、少しお待ちください。</p>
@@ -111,69 +110,83 @@
         const timeEl = document.getElementById('time');
 
         // ゲーム変数の管理
-        let gameState = 'loading'; // loading, calib_close, calib_open, ready, playing, end
+        let gameState = 'loading'; 
         let score = 0;
         let timeLeft = 30;
         let apples = [];
         let gameTimer = null;
 
-        // トラッキング・キャリブレーション変数
-        let currentMouthRatio = 0; 
-        let minMouthRatio = 0; // 口を閉じたときの基準値
-        let maxMouthRatio = 0; // 口を開けたときの基準値
-        let mouthPos = { x: 0, y: 0 };
-        let isMouthOpen = false;
+        // トラッキング変数
+        let currentHandRatio = 0; 
+        let openHandRatio = 0;   // パー（開いた手）の基準値
+        let closedHandRatio = 0; // グー（握った手）の基準値
+        let handPos = { x: 0, y: 0 };
+        let isHandClosed = false;
 
-        // --- 顔のランドマークから口の開き具合（比率）を計算 ---
-        // ※顔の縦の長さに対する、唇の距離の割合を出すことでカメラ距離の差を吸収します
-        function calculateMouthRatio(landmarks) {
-            const upperLip = landmarks[13];  // 上唇の内側中央
-            const lowerLip = landmarks[14];  // 下唇の内側中央
-            const topHead = landmarks[10];   // 額
-            const bottomChin = landmarks[152]; // 顎
-
-            // ピクセル単位の距離を計算（ピタゴラスの定理）
-            const mouthDist = Math.hypot(upperLip.x - lowerLip.x, upperLip.y - lowerLip.y);
-            const faceDist = Math.hypot(topHead.x - bottomChin.x, topHead.y - bottomChin.y);
+        // --- 手のランドマークから「握り具合（比率）」を計算 ---
+        // 手首からの「手のひらの長さ」に対して、「指先までの長さ」がどれくらいあるか計算
+        function calculateHandRatio(landmarks) {
+            const wrist = landmarks[0];        // 手首
+            const middleBase = landmarks[9];   // 中指の付け根
             
-            return mouthDist / faceDist;
+            // 手のひらのベース距離（カメラの遠近を吸収するため）
+            const palmDist = Math.hypot(wrist.x - middleBase.x, wrist.y - middleBase.y);
+            
+            // 4本の指先（人差し指、中指、薬指、小指）と手首の距離の平均を計算
+            const tips = [8, 12, 16, 20];
+            let tipSum = 0;
+            tips.forEach(tip => {
+                tipSum += Math.hypot(wrist.x - landmarks[tip].x, wrist.y - landmarks[tip].y);
+            });
+            const avgTipDist = tipSum / tips.length;
+            
+            // 比率を返す（パーなら数値が大きく、グーなら数値が小さくなる）
+            return avgTipDist / palmDist;
         }
 
         // --- MediaPipe 毎フレームの処理 ---
         function onResults(results) {
-            // キャンバスのクリアと映像の描画
             canvasCtx.save();
             canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
             canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
 
-            if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
-                const landmarks = results.multiFaceLandmarks[0];
+            // 手が認識されているか
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                const landmarks = results.multiHandLandmarks[0]; // 1つ目の手を取得
                 
-                // 現在の口の開き比率を計算
-                currentMouthRatio = calculateMouthRatio(landmarks);
+                // 現在の握り具合（比率）を計算
+                currentHandRatio = calculateHandRatio(landmarks);
                 
-                // 口の中心座標を取得（キャンバスサイズに掛け算）
-                const upperLip = landmarks[13];
-                const lowerLip = landmarks[14];
-                mouthPos.x = ((upperLip.x + lowerLip.x) / 2) * canvasElement.width;
-                mouthPos.y = ((upperLip.y + lowerLip.y) / 2) * canvasElement.height;
+                // 当たり判定の中心点を「中指の付け根（てのひらの中央付近）」に設定
+                handPos.x = landmarks[9].x * canvasElement.width;
+                handPos.y = landmarks[9].y * canvasElement.height;
 
                 // プレイ中の判定ロジック
                 if (gameState === 'playing') {
-                    // キャリブレーションしたMaxとMinの差のうち、40%を超えたら「開いた」と判定
-                    const threshold = minMouthRatio + (maxMouthRatio - minMouthRatio) * 0.4;
-                    isMouthOpen = currentMouthRatio > threshold;
+                    // グーとパーの差分のうち、パーから60%以上閉じたら「グー（握った）」と判定
+                    // ※パーの時が数値が大きく、グーの時が数値が小さくなります
+                    const threshold = closedHandRatio + (openHandRatio - closedHandRatio) * 0.4;
+                    isHandClosed = currentHandRatio < threshold;
 
-                    // デバッグ・演出用：口の位置にマーカーを表示
+                    // AIが認識している骨格を描画（握ると赤、開くと緑）
+                    const color = isHandClosed ? "#FF0000" : "#00FF00";
+                    drawConnectors(canvasCtx, landmarks, HAND_CONNECTIONS, {color: color, lineWidth: 5});
+                    drawLandmarks(canvasCtx, landmarks, {color: color, lineWidth: 2, radius: 3});
+
+                    // 手のひらの中心（当たり判定ポイント）に円を描画
                     canvasCtx.beginPath();
-                    canvasCtx.arc(mouthPos.x, mouthPos.y, 25, 0, 2 * Math.PI);
-                    canvasCtx.fillStyle = isMouthOpen ? "rgba(0, 255, 0, 0.4)" : "rgba(255, 0, 0, 0.4)";
+                    canvasCtx.arc(handPos.x, handPos.y, 40, 0, 2 * Math.PI);
+                    canvasCtx.fillStyle = isHandClosed ? "rgba(255, 0, 0, 0.4)" : "rgba(0, 255, 0, 0.4)";
                     canvasCtx.fill();
 
                     // リンゴとの当たり判定
-                    if (isMouthOpen) {
-                        checkBite();
+                    if (isHandClosed) {
+                        checkCrush();
                     }
+                } else {
+                    // キャリブレーション中の骨格描画（青）
+                    drawConnectors(canvasCtx, landmarks, HAND_CONNECTIONS, {color: "#00a8ff", lineWidth: 5});
+                    drawLandmarks(canvasCtx, landmarks, {color: "#00a8ff", lineWidth: 2});
                 }
             }
 
@@ -185,13 +198,13 @@
             canvasCtx.restore();
         }
 
-        // --- 当たり判定（食べる動作） ---
-        function checkBite() {
+        // --- 当たり判定（握りつぶす動作） ---
+        function checkCrush() {
             apples.forEach(apple => {
                 if (apple.state === 'falling') {
-                    const dist = Math.hypot(apple.x - mouthPos.x, apple.y - mouthPos.y);
-                    if (dist < 50) { // 口とリンゴの距離が近い場合
-                        apple.state = 'bitten';
+                    const dist = Math.hypot(apple.x - handPos.x, apple.y - handPos.y);
+                    if (dist < 60) { // 手のひらとリンゴの距離が近い場合
+                        apple.state = 'crushed';
                         score++;
                         scoreEl.innerText = score;
                     }
@@ -206,7 +219,7 @@
                 x: Math.random() * (canvasElement.width - 100) + 50,
                 y: -40,
                 speed: Math.random() * 3 + 2,
-                state: 'falling' // 'falling' or 'bitten'
+                state: 'falling'
             });
             setTimeout(spawnApple, Math.random() * 800 + 600);
         }
@@ -219,10 +232,10 @@
                     canvasCtx.font = "50px sans-serif";
                     canvasCtx.fillText("🍎", p.x - 25, p.y + 20);
                     if (p.y > canvasElement.height + 50) apples.splice(i, 1);
-                } else if (p.state === 'bitten') {
+                } else if (p.state === 'crushed') {
                     canvasCtx.font = "40px sans-serif";
-                    canvasCtx.fillText("✨", p.x - 20, p.y + 15);
-                    p.alpha = (p.alpha || 1) - 0.1;
+                    canvasCtx.fillText("💥", p.x - 20, p.y + 15);
+                    p.alpha = (p.alpha || 1) - 0.1; // フェードアウト
                     if (p.alpha <= 0) apples.splice(i, 1);
                 }
             }
@@ -231,37 +244,48 @@
         // --- ボタンが押されたときの状態遷移（フロー進行） ---
         actionBtn.addEventListener('click', () => {
             if (gameState === 'loading_done') {
-                // ステップ1: 口を閉じる
-                gameState = 'calib_close';
-                overlayTitle.innerText = "ステップ 1/2";
-                overlayDesc.innerText = "顔をカメラに向け、「口を普通に閉じた状態」でボタンを押してください。";
-                actionBtn.innerText = "閉じた状態で記録";
-            
-            } else if (gameState === 'calib_close') {
-                // 口を閉じた値を記録し、ステップ2へ
-                minMouthRatio = currentMouthRatio;
+                // ステップ1: パーを記録
                 gameState = 'calib_open';
-                overlayTitle.innerText = "ステップ 2/2";
-                overlayDesc.innerHTML = "次に、「口を大きく開けた状態（あーんの口）」のまま<br>ボタンを押してください。";
-                actionBtn.innerText = "開けた状態で記録";
+                overlayTitle.innerText = "ステップ 1/2";
+                overlayDesc.innerHTML = "カメラに手を開いて（パー）向け、<br>画面に青い線（骨格）が出たらボタンを押してください。";
+                actionBtn.innerText = "パーの状態で記録";
             
             } else if (gameState === 'calib_open') {
-                // 口を開けた値を記録し、準備完了へ
-                maxMouthRatio = currentMouthRatio;
+                // パーの値を記録
+                if (currentHandRatio === 0) {
+                    alert("手が認識されていません。カメラに手を向けてください。");
+                    return;
+                }
+                openHandRatio = currentHandRatio;
+                gameState = 'calib_close';
+                overlayTitle.innerText = "ステップ 2/2";
+                overlayDesc.innerHTML = "次に、手をギュッと握り（グー）、<br>その状態でボタンを押してください。";
+                actionBtn.innerText = "グーの状態で記録";
+            
+            } else if (gameState === 'calib_close') {
+                // グーの値を記録
+                if (currentHandRatio === 0) {
+                    alert("手が認識されていません。カメラに手を向けてください。");
+                    return;
+                }
+                closedHandRatio = currentHandRatio;
                 
-                // 万が一うまく認識されなかった時のエラー回避
-                if (maxMouthRatio <= minMouthRatio) {
-                    alert("うまく認識できませんでした。もう一度口を開けてやり直してください。");
+                // エラー回避（パーよりグーの方が数値が大きくなってしまった場合など）
+                if (openHandRatio <= closedHandRatio) {
+                    alert("うまく認識できませんでした。もう一度パーからやり直してください。");
+                    gameState = 'loading_done';
+                    overlayTitle.innerText = "やり直し";
+                    overlayDesc.innerText = "もう一度手の大きさをAIに学習させます。";
+                    actionBtn.innerText = "次へ";
                     return;
                 }
 
                 gameState = 'ready';
                 overlayTitle.innerText = "準備完了！";
-                overlayDesc.innerText = "リンゴが落ちてきたら、口を開けてパクリと食べてください！";
+                overlayDesc.innerText = "リンゴの場所で手を握って（グー）つぶしてください！";
                 actionBtn.innerText = "ゲームスタート";
             
             } else if (gameState === 'ready' || gameState === 'end') {
-                // ゲームスタート
                 startGame();
             }
         });
@@ -298,33 +322,31 @@
             actionBtn.innerText = "もう一度遊ぶ";
         }
 
-        // --- MediaPipe FaceMesh の初期化 ---
-        const faceMesh = new FaceMesh({locateFile: (file) => {
-            return `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`;
+        // --- MediaPipe Hands の初期化 ---
+        const hands = new Hands({locateFile: (file) => {
+            return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
         }});
-        faceMesh.setOptions({
-            maxNumFaces: 1, // 1人だけ認識
-            refineLandmarks: true,
+        hands.setOptions({
+            maxNumHands: 1, // 1つの手だけ認識
+            modelComplexity: 1,
             minDetectionConfidence: 0.5,
             minTrackingConfidence: 0.5
         });
-        faceMesh.onResults(onResults);
+        hands.onResults(onResults);
 
-        // --- カメラのセットアップ（MediaPipeのCameraUtilsを使用） ---
+        // --- カメラのセットアップ ---
         const camera = new Camera(videoElement, {
             onFrame: async () => {
-                await faceMesh.send({image: videoElement});
+                await hands.send({image: videoElement});
             },
             width: 640,
             height: 480
         });
 
-        // カメラ起動開始
         camera.start().then(() => {
-            // モデルとカメラの読み込みが完了したらボタンを表示
             gameState = 'loading_done';
             overlayTitle.innerText = "カメラの接続に成功しました";
-            overlayDesc.innerText = "まずは、あなたの口の大きさをAIに学習させます。";
+            overlayDesc.innerText = "まずは、あなたの手の「パー」と「グー」を学習させます。";
             actionBtn.style.display = 'block';
         }).catch(err => {
             alert("カメラの起動に失敗しました。権限を確認してください。");

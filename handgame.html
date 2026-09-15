@@ -30,7 +30,7 @@
             height: 100%;
             border-radius: 6px;
         }
-        /* ビデオは左右反転させて鏡のようにする */
+        /* ビデオとキャンバスは左右反転させて鏡のようにする */
         video, #game-canvas {
             transform: scaleX(-1);
         }
@@ -74,7 +74,8 @@
     <p>手のひらの黄緑色シールをカメラに見せて移動し、握って（隠して）リンゴを潰そう！</p>
 
     <div id="game-container">
-        <video id="webcam" autoplay playsinline></video>
+        <!-- 自動再生ブロック対策のため muted を追加 -->
+        <video id="webcam" autoplay playsinline muted></video>
         <canvas id="game-canvas" width="640" height="480"></canvas>
         
         <div id="ui-layer">
@@ -111,13 +112,20 @@
                     video: { width: 640, height: 480, facingMode: "user" }
                 });
                 video.srcObject = stream;
+                
+                // 映像データが読み込まれたら明示的に再生する
+                video.onloadedmetadata = () => {
+                    video.play();
+                };
             } catch (err) {
                 alert("カメラのアクセスが許可されていません。");
+                console.error(err);
             }
         }
 
         // --- 色認識処理 (黄緑色) ---
         function trackColor() {
+            // ビデオ映像をキャンバスに描画
             ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
             const frame = ctx.getImageData(0, 0, canvas.width, canvas.height);
             const data = frame.data;
@@ -130,8 +138,7 @@
                 const g = data[i + 1];
                 const b = data[i + 2];
 
-                // 黄緑色の判定基準 (照明環境に合わせて微調整が必要です)
-                // 緑が強く、赤がそこそこあり、青が少ない条件
+                // 黄緑色の判定基準
                 if (g > 150 && r > 100 && r < 200 && b < 100) {
                     matchCount++;
                     const pixelIndex = i / 4;

@@ -29,12 +29,10 @@
         
         .overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.85); display: flex; flex-direction: column; justify-content: center; align-items: center; z-index: 20; transition: background 0.3s; }
         
-        /* UIの位置を少し下げて、戻るボタンと被らないように調整 */
         #ui-layer { position: absolute; top: 60px; left: 10px; right: 10px; display: none; justify-content: space-between; font-size: 24px; font-weight: bold; z-index: 10; text-shadow: 2px 2px 4px rgba(0,0,0,1); pointer-events: none; }
         
         #warning-text { position: absolute; top: 40%; width: 100%; text-align: center; color: #ff3b3b; font-size: 28px; font-weight: bold; display: none; z-index: 15; text-shadow: 2px 2px 4px #000; pointer-events: none; }
         
-        /* ★ TOPへ戻るボタン ★ */
         #back-btn { position: absolute; top: 10px; left: 10px; padding: 10px 15px; font-size: 16px; font-weight: bold; background-color: rgba(0, 0, 0, 0.6); color: white; border: 2px solid white; border-radius: 5px; cursor: pointer; z-index: 30; text-decoration: none; transition: 0.2s; }
         #back-btn:hover { background-color: rgba(255, 255, 255, 0.3); }
 
@@ -56,7 +54,6 @@
         <video id="webcam" autoplay playsinline muted></video>
         <canvas id="game-canvas" width="800" height="600"></canvas>
         
-        <!-- UIレイヤー -->
         <a href="index.html" id="back-btn">◀ TOPへ戻る</a>
         <button id="fullscreen-btn">🔲 全画面にする</button>
 
@@ -135,13 +132,11 @@
         document.addEventListener('fullscreenchange', () => updateFullscreenUI(!!document.fullscreenElement));
         document.addEventListener('webkitfullscreenchange', () => updateFullscreenUI(!!document.webkitFullscreenElement));
 
-        // --- ゲーム用変数 ---
         let gameState = 'loading'; 
         let gameMode = ''; 
         let score = 0; let lives = 3; let timeLeft = 45;
         let gameTimer = null; let animationId = null;
 
-        // ★ スピード向上と二度打ち防止フラグ（canHitRacket）を追加
         let ball = { x: 400, y: 400, vx: 0, vy: 0, radius: 10, speed: 8, maxSpeed: 25, canHitRacket: true };
         let blocks = [];
         const blockRows = 5, blockCols = 8;
@@ -170,7 +165,7 @@
         function resetBall() {
             ball.x = canvasElement.width / 2; ball.y = PLAY_AREA_LINE + 50;
             ball.vx = (Math.random() > 0.5 ? 1 : -1) * (ball.speed * 0.7); ball.vy = ball.speed; 
-            ball.canHitRacket = true; // リセット時にフラグ回復
+            ball.canHitRacket = true; 
         }
 
         function gameLoop() {
@@ -179,6 +174,11 @@
 
             canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
             canvasCtx.fillStyle = "#111"; canvasCtx.fillRect(0, 0, canvasElement.width, canvasElement.height);
+
+            // ★ フィールドのアウトライン（枠線）を描画 ★
+            canvasCtx.strokeStyle = "rgba(255, 255, 255, 0.4)";
+            canvasCtx.lineWidth = 6;
+            canvasCtx.strokeRect(3, 3, canvasElement.width - 6, canvasElement.height - 6);
 
             canvasCtx.beginPath(); canvasCtx.moveTo(0, PLAY_AREA_LINE); canvasCtx.lineTo(canvasElement.width, PLAY_AREA_LINE);
             canvasCtx.strokeStyle = "rgba(255, 255, 255, 0.2)"; canvasCtx.lineWidth = 4; canvasCtx.setLineDash([10, 10]); canvasCtx.stroke();
@@ -192,7 +192,7 @@
                     canvasCtx.fillStyle = b.color; canvasCtx.fillRect(b.x, b.y, blockWidth, blockHeight);
                     if (ball.x > b.x && ball.x < b.x + blockWidth && ball.y > b.y && ball.y < b.y + blockHeight) {
                         ball.vy = -ball.vy; b.status = 0; score += 100; scoreEl.innerText = score;
-                        ball.canHitRacket = true; // ブロックに当たったらラケット判定回復
+                        ball.canHitRacket = true; 
                     }
                 }
             });
@@ -201,11 +201,9 @@
 
             ball.x += ball.vx; ball.y += ball.vy;
 
-            // 壁に当たったらラケット判定回復
             if (ball.x + ball.vx > canvasElement.width - ball.radius || ball.x + ball.vx < ball.radius) { ball.vx = -ball.vx; ball.canHitRacket = true; }
             if (ball.y + ball.vy < ball.radius) { ball.vy = -ball.vy; ball.canHitRacket = true; }
 
-            // ★ 二度打ち防止フラグの解除：ボールが下に向かって落ち始めたら再び打てる ★
             if (ball.vy > 0) { ball.canHitRacket = true; }
 
             if (currentHandValid) checkHandCollision();
@@ -228,11 +226,30 @@
                 canvasCtx.lineCap = "round"; canvasCtx.stroke();
             }
 
+            // ボールの描画
             canvasCtx.beginPath(); canvasCtx.arc(ball.x, ball.y, ball.radius, 0, Math.PI * 2);
             canvasCtx.fillStyle = "#fff";
-            if (Math.abs(ball.vy) > ball.speed * 1.5) { canvasCtx.fillStyle = "#ff3b3b"; canvasCtx.shadowBlur = 10; canvasCtx.shadowColor = "red"; } 
-            else { canvasCtx.shadowBlur = 0; }
-            canvasCtx.fill(); canvasCtx.shadowBlur = 0; 
+            
+            // スマッシュ判定
+            let isSmash = Math.abs(ball.vy) > ball.speed * 1.5;
+            if (isSmash) { 
+                canvasCtx.fillStyle = "#ff3b3b"; canvasCtx.shadowBlur = 10; canvasCtx.shadowColor = "red"; 
+            } else { 
+                canvasCtx.shadowBlur = 0; 
+            }
+            canvasCtx.fill(); 
+            canvasCtx.shadowBlur = 0; 
+
+            // ★ SMASH!! テキストの描画 ★
+            if (isSmash) {
+                canvasCtx.fillStyle = "#ffeb3b"; // 黄色
+                canvasCtx.font = "bold italic 28px sans-serif";
+                canvasCtx.shadowBlur = 5;
+                canvasCtx.shadowColor = "black";
+                // ボールの少し上に追従して表示
+                canvasCtx.fillText("SMASH!!", ball.x + 15, ball.y - 15);
+                canvasCtx.shadowBlur = 0; // リセット
+            }
             
             if (currentWarningMsg !== "") {
                 if (warningText.innerText !== currentWarningMsg) warningText.innerText = currentWarningMsg;
@@ -240,9 +257,8 @@
             } else { warningText.style.display = 'none'; }
         }
 
-        // --- ★ 物理演算の完全修正版 ★ ---
         function checkHandCollision() {
-            if (!ball.canHitRacket) return; // 二度打ち防止中なら判定しない
+            if (!ball.canHitRacket) return; 
 
             const A = handLine.p1; const B = handLine.p2; const P = ball;
             const ABx = B.x - A.x; const ABy = B.y - A.y;
@@ -251,37 +267,30 @@
             if (lenAB2 === 0) return; 
 
             let t = (APx * ABx + APy * ABy) / lenAB2;
-            t = Math.max(-0.2, Math.min(1.2, t)); // 指の長さより少しだけ当たり判定を広げる
+            t = Math.max(-0.2, Math.min(1.2, t)); 
             const Cx = A.x + t * ABx; const Cy = A.y + t * ABy;
             const dist = Math.hypot(P.x - Cx, P.y - Cy);
 
-            // すり抜け対策: 速度が速いほど当たり判定を太くする
             const speed = Math.hypot(ball.vx, ball.vy);
             const handSpeed = Math.hypot(handVelocity.vx, handVelocity.vy);
             const hitRadius = ball.radius + 15 + (speed + handSpeed) * 0.4;
 
             if (dist < hitRadius) { 
-                // ラケットの法線（直交ベクトル）を計算
                 let nx = -ABy; let ny = ABx;
-                // ★ 強制的に「上向き（yがマイナス方向）」に設定し、絶対に下に弾かないようにする ★
                 if (ny > 0) { nx = ABy; ny = -ABx; }
                 
                 const nLen = Math.hypot(nx, ny);
                 if (nLen > 0) { nx /= nLen; ny /= nLen; }
 
-                // ボールの速度ベクトルを反射させる
                 const dot = ball.vx * nx + ball.vy * ny;
-                // ボールがすでに上に向かっているのに当たった場合は無視（すり抜け）
                 if (dot > 0) return; 
 
                 ball.vx = ball.vx - 2 * dot * nx;
                 ball.vy = ball.vy - 2 * dot * ny;
 
-                // ★ スマッシュ: 手の速度をボールにしっかり加算する ★
                 ball.vx += handVelocity.vx * 0.4;
                 ball.vy += handVelocity.vy * 0.4;
 
-                // スピード制限
                 const currentSpeed = Math.hypot(ball.vx, ball.vy);
                 if (currentSpeed < ball.speed) {
                     ball.vx = (ball.vx / currentSpeed) * ball.speed;
@@ -290,17 +299,12 @@
                     ball.vx = (ball.vx / currentSpeed) * ball.maxSpeed;
                     ball.vy = (ball.vy / currentSpeed) * ball.maxSpeed;
                 }
-
-                // 強制的に上へ押し出してめり込みを解消
                 ball.x = Cx + nx * (ball.radius + 15);
                 ball.y = Cy + ny * (ball.radius + 15);
-
-                // ★ 二度打ち防止フラグをオン（無効状態）にする ★
                 ball.canHitRacket = false;
             }
         }
 
-        // --- AI認識 ---
         function onResults(results) {
             if (gameState === 'calibration') {
                 canvasCtx.save(); canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
@@ -348,7 +352,6 @@
             }
         }
 
-        // --- 画面フロー管理 ---
         function showModeSelection() {
             gameState = 'select'; overlayScreen.style.display = 'flex'; overlayScreen.style.background = 'rgba(0,0,0,0.85)';
             overlayTitle.innerText = "モードを選択してください"; overlayDesc.style.display = 'none'; modeSelection.style.display = 'flex';

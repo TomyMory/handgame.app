@@ -51,7 +51,6 @@
 
     <div id="game-container">
         <video id="webcam" autoplay playsinline muted></video>
-        <!-- 映像を薄く映すために背景用Canvasを分けるのもアリですが、今回は1つのCanvasで処理します -->
         <canvas id="game-canvas" width="800" height="600"></canvas>
         
         <div id="ui-layer">
@@ -99,10 +98,20 @@
         const infoCenter = document.getElementById('info-center');
         const rightInfo = document.getElementById('right-info');
         
-        // 全画面機能
+        // --- ★ 修正1: 全画面機能のバグ修正 ★ ---
         const fullscreenBtn = document.getElementById('fullscreen-btn');
         const gameContainer = document.getElementById('game-container');
         let isCSSFullscreen = false;
+
+        function updateFullscreenUI(isFullscreen) {
+            if (isFullscreen) {
+                fullscreenBtn.innerText = "✖ 元に戻す";
+            } else {
+                fullscreenBtn.innerText = "🔲 全画面にする";
+                gameContainer.classList.remove('ios-fullscreen');
+                isCSSFullscreen = false;
+            }
+        }
 
         fullscreenBtn.addEventListener('click', () => {
             const isNativeFullscreen = document.fullscreenElement || document.webkitFullscreenElement;
@@ -111,18 +120,22 @@
                     if (document.exitFullscreen) document.exitFullscreen();
                     else if (document.webkitExitFullscreen) document.webkitExitFullscreen();
                 } else {
-                    gameContainer.classList.remove('ios-fullscreen');
-                    isCSSFullscreen = false;
-                    fullscreenBtn.innerText = "🔲 全画面にする";
+                    updateFullscreenUI(false);
                 }
             } else {
                 if (gameContainer.requestFullscreen) {
-                    gameContainer.requestFullscreen().catch(() => { gameContainer.classList.add('ios-fullscreen'); isCSSFullscreen = true; });
-                } else if (gameContainer.webkitRequestFullscreen) { gameContainer.webkitRequestFullscreen(); } 
-                else { gameContainer.classList.add('ios-fullscreen'); isCSSFullscreen = true; }
-                fullscreenBtn.innerText = "✖ 元に戻す";
+                    gameContainer.requestFullscreen().catch(() => { gameContainer.classList.add('ios-fullscreen'); isCSSFullscreen = true; updateFullscreenUI(true); });
+                } else if (gameContainer.webkitRequestFullscreen) { 
+                    gameContainer.webkitRequestFullscreen(); 
+                } else { 
+                    gameContainer.classList.add('ios-fullscreen'); isCSSFullscreen = true; updateFullscreenUI(true); 
+                }
             }
         });
+
+        // Escキーなどで戻った時の検知を強化
+        document.addEventListener('fullscreenchange', () => updateFullscreenUI(!!document.fullscreenElement));
+        document.addEventListener('webkitfullscreenchange', () => updateFullscreenUI(!!document.webkitFullscreenElement));
 
         // --- ゲーム用変数 ---
         let gameState = 'loading'; // loading, select, calibration, playing, result
@@ -138,14 +151,21 @@
         const blockRows = 5, blockCols = 8;
         const blockWidth = 80, blockHeight = 25, blockPadding = 10, blockOffsetTop = 50, blockOffsetLeft = 45;
 
+        // ★ 修正2・3: 描画消失バグを防ぐため、状態を保存するグローバル変数 ★
+        let currentP1 = { x:0, y:0 };
+        let currentP2 = { x:0, y:0 };
+        let currentHandValid = false;
+        let currentWarningMsg = "";
+        let currentHandDist = 0.1;
+        let isHandTracked = false;
+
         let handLine = { p1: {x:0, y:0}, p2: {x:0, y:0} };
         let lastHandCenter = { x:0, y:0 };
         let handVelocity = { vx:0, vy:0 };
-        let isHandValid = false;
 
-        // 距離制限とハメ技ライン定数
-        const MIN_HAND_DIST = 0.05; 
-        const MAX_HAND_DIST = 0.35; 
+        // 距離制限の数値を少しタイトにしてメリハリをつける
+        const MIN_HAND_DIST = 0.08; 
+        const MAX_HAND_DIST = 0.30; 
         const PLAY_AREA_LINE = canvasElement.height / 2; 
 
         function initBlocks() {
@@ -169,15 +189,17 @@
             ball.vy = ball.speed; 
         }
 
+        // --- 毎フレームの描画処理（ここでラケットも描画する） ---
         function gameLoop() {
             if (gameState !== 'playing') return;
             animationId = requestAnimationFrame(gameLoop);
 
+            // 背景クリア（ここで一回真っ黒になる）
             canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
             canvasCtx.fillStyle = "#111";
             canvasCtx.fillRect(0, 0, canvasElement.width, canvasElement.height);
 
-            // ハメ技防止ライン
+            // ネット描画
             canvasCtx.beginPath();
             canvasCtx.moveTo(0, PLAY_AREA_LINE);
             canvasCtx.lineTo(canvasElement.width, PLAY_AREA_LINE);
@@ -190,7 +212,7 @@
             canvasCtx.font = "16px sans-serif";
             canvasCtx.fillText("⬇ これより下で打つ！ ⬇", canvasElement.width/2 - 90, PLAY_AREA_LINE + 20);
 
-            // ブロック
+            // ブロック判定と描画
             let activeBlocks = 0;
             blocks.forEach(b => {
                 if (b.status === 1) {
@@ -206,46 +228,59 @@
                 }
             });
 
-            if (activeBlocks === 0 && gameMode === 'basic') {
-                gameClear();
-                return;
-            }
+            if (activeBlocks === 0 && gameMode === 'basic') { gameClear(); return; }
 
-            ball.x += ball.vx;
-            ball.y += ball.vy;
+            // ボールの移動
+            ball.x += ball.vx; ball.y += ball.vy;
 
             if (ball.x + ball.vx > canvasElement.width - ball.radius || ball.x + ball.vx < ball.radius) { ball.vx = -ball.vx; }
             if (ball.y + ball.vy < ball.radius) { ball.vy = -ball.vy; }
 
-            if (isHandValid) checkHandCollision();
+            if (currentHandValid) checkHandCollision();
 
-            // ボール落下判定
+            // 落下判定
             if (ball.y + ball.vy > canvasElement.height) {
                 if (gameMode === 'basic') {
-                    lives--;
-                    rightInfo.innerText = "残機: " + lives;
+                    lives--; rightInfo.innerText = "残機: " + lives;
                     if (lives <= 0) { gameOver(); return; } else { resetBall(); }
                 } else if (gameMode === 'timeattack') {
-                    score -= 500;
-                    scoreEl.innerText = score;
-                    warningText.innerText = "落下ペナルティ: -500点";
-                    warningText.style.display = 'block';
-                    setTimeout(() => { if(gameState === 'playing') warningText.style.display = 'none'; }, 1000);
+                    score -= 500; scoreEl.innerText = score;
+                    currentWarningMsg = "落下ペナルティ: -500点";
+                    setTimeout(() => { if(gameState === 'playing' && currentWarningMsg === "落下ペナルティ: -500点") currentWarningMsg = ""; }, 1000);
                     resetBall();
                 }
             }
 
-            // ボール描画
+            // ★ 修正3: 背景やブロックを描いた後に、一番手前にラケットを描く ★
+            if (isHandTracked) {
+                canvasCtx.beginPath();
+                canvasCtx.moveTo(currentP1.x, currentP1.y);
+                canvasCtx.lineTo(currentP2.x, currentP2.y);
+                canvasCtx.strokeStyle = currentHandValid ? "#00ffff" : "#ff0000";
+                
+                // ★ 修正2: 距離によって線の太さを変え、遠近感を強調する ★
+                canvasCtx.lineWidth = Math.max(5, currentHandDist * 100); 
+                canvasCtx.lineCap = "round";
+                canvasCtx.stroke();
+            }
+
+            // ボール描画（一番手前）
             canvasCtx.beginPath();
             canvasCtx.arc(ball.x, ball.y, ball.radius, 0, Math.PI * 2);
             canvasCtx.fillStyle = "#fff";
             if (Math.abs(ball.vy) > ball.speed * 1.5) {
-                canvasCtx.fillStyle = "#ff3b3b";
-                canvasCtx.shadowBlur = 10;
-                canvasCtx.shadowColor = "red";
+                canvasCtx.fillStyle = "#ff3b3b"; canvasCtx.shadowBlur = 10; canvasCtx.shadowColor = "red";
             } else { canvasCtx.shadowBlur = 0; }
             canvasCtx.fill();
             canvasCtx.shadowBlur = 0; 
+            
+            // テキスト更新
+            if (currentWarningMsg !== "") {
+                if (warningText.innerText !== currentWarningMsg) warningText.innerText = currentWarningMsg;
+                warningText.style.display = 'block';
+            } else {
+                warningText.style.display = 'none';
+            }
         }
 
         function checkHandCollision() {
@@ -285,137 +320,99 @@
             }
         }
 
-        // --- MediaPipe 毎フレーム処理（キャリブレーション機能追加） ---
+        // --- AI認識と状態保存 ---
         function onResults(results) {
-            canvasCtx.save();
-            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
-            
-            // チュートリアル中(calibration)は自分の姿を見やすくするために背景を描画する
-            if (gameState === 'calibration' || gameState === 'playing') {
+            // キャリブレーション時は自分の映像を描画する
+            if (gameState === 'calibration') {
+                canvasCtx.save();
+                canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+                canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+                canvasCtx.restore();
+            }
+
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                isHandTracked = true;
+                const landmarks = results.multiHandLandmarks[0];
+                const handDist = Math.hypot(landmarks[0].x - landmarks[9].x, landmarks[0].y - landmarks[9].y);
+                currentHandDist = handDist; // 大きさ保存
+                
+                const p1 = { x: landmarks[5].x * canvasElement.width, y: landmarks[5].y * canvasElement.height };
+                const p2 = { x: landmarks[8].x * canvasElement.width, y: landmarks[8].y * canvasElement.height };
+                const center = { x: (p1.x + p2.x)/2, y: (p1.y + p2.y)/2 };
+                currentP1 = p1; currentP2 = p2;
+
+                handVelocity.vx = center.x - lastHandCenter.x; handVelocity.vy = center.y - lastHandCenter.y;
+                lastHandCenter = { x: center.x, y: center.y };
+                handLine = { p1: p1, p2: p2 };
+                
                 if (gameState === 'calibration') {
-                    // キャリブレーション時はカメラ映像を映す
-                    canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
-                }
-
-                if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
-                    const landmarks = results.multiHandLandmarks[0];
-                    const handDist = Math.hypot(landmarks[0].x - landmarks[9].x, landmarks[0].y - landmarks[9].y);
-                    
-                    const p1 = { x: landmarks[5].x * canvasElement.width, y: landmarks[5].y * canvasElement.height };
-                    const p2 = { x: landmarks[8].x * canvasElement.width, y: landmarks[8].y * canvasElement.height };
-                    const center = { x: (p1.x + p2.x)/2, y: (p1.y + p2.y)/2 };
-
-                    handVelocity.vx = center.x - lastHandCenter.x; handVelocity.vy = center.y - lastHandCenter.y;
-                    lastHandCenter = { x: center.x, y: center.y };
-                    handLine = { p1: p1, p2: p2 };
-                    
-                    isHandValid = true;
-
-                    // ★ チュートリアル（調整）時の処理 ★
-                    if (gameState === 'calibration') {
-                        if (handDist > MAX_HAND_DIST) {
-                            overlayDesc.innerHTML = "人差し指を立てて、画面に向けてください。<br><br><span style='color:#ff3b3b; font-size:1.5rem; background:rgba(0,0,0,0.5); padding:10px;'>❌ 近すぎます！もう少し離れてください</span>";
-                            actionBtn.style.display = 'none';
-                        } else if (handDist < MIN_HAND_DIST) {
-                            overlayDesc.innerHTML = "人差し指を立てて、画面に向けてください。<br><br><span style='color:#ff3b3b; font-size:1.5rem; background:rgba(0,0,0,0.5); padding:10px;'>❌ 遠すぎます！もう少し近づいてください</span>";
-                            actionBtn.style.display = 'none';
-                        } else {
-                            // 適正距離
-                            overlayDesc.innerHTML = "人差し指を立てて、画面に向けてください。<br><br><span style='color:#4CAF50; font-size:1.5rem; background:rgba(0,0,0,0.5); padding:10px;'>🟢 OK！バッチリです。<br>この距離感で水色の線を使って打ち返します。</span>";
-                            actionBtn.style.display = 'block';
-                            actionBtn.disabled = false;
-                            
-                            // 実際のラケット線を水色で描画して見せる
-                            canvasCtx.beginPath();
-                            canvasCtx.moveTo(p1.x, p1.y);
-                            canvasCtx.lineTo(p2.x, p2.y);
-                            canvasCtx.strokeStyle = "#00ffff";
-                            canvasCtx.lineWidth = 15;
-                            canvasCtx.lineCap = "round";
-                            canvasCtx.stroke();
-                        }
-                    } 
-                    // ★ プレイ中の処理 ★
-                    else if (gameState === 'playing') {
-                        let warningMsg = "";
-                        if (handDist > MAX_HAND_DIST) { isHandValid = false; warningMsg = "近すぎます！もう少し離れてください"; } 
-                        else if (handDist < MIN_HAND_DIST) { isHandValid = false; warningMsg = "遠すぎます！もう少し近づいてください"; } 
-                        else if (center.y < PLAY_AREA_LINE) { isHandValid = false; warningMsg = "ラインより下で打ち返してください！"; }
-
-                        if (warningMsg !== "") {
-                            warningText.innerText = warningMsg; warningText.style.display = 'block';
-                        } else {
-                            warningText.style.display = 'none';
-                            // プレイ中、ラケットを描画
-                            canvasCtx.beginPath(); canvasCtx.moveTo(p1.x, p1.y); canvasCtx.lineTo(p2.x, p2.y);
-                            canvasCtx.strokeStyle = "#00ffff"; canvasCtx.lineWidth = 15; canvasCtx.lineCap = "round"; canvasCtx.stroke();
-                        }
-                    }
-                } else {
-                    isHandValid = false;
-                    handVelocity = { vx:0, vy:0 };
-                    if (gameState === 'calibration') {
-                        overlayDesc.innerHTML = "人差し指を立てて、画面に向けてください。<br><br><span style='color:#ffff00; font-size:1.5rem; background:rgba(0,0,0,0.5); padding:10px;'>手が認識されていません</span>";
+                    if (handDist > MAX_HAND_DIST) {
+                        overlayDesc.innerHTML = "人差し指を立てて、画面に向けてください。<br><br><span style='color:#ff3b3b; font-size:1.5rem; background:rgba(0,0,0,0.5); padding:10px;'>❌ 近すぎます！もう少し離れてください</span>";
                         actionBtn.style.display = 'none';
-                    } else if (gameState === 'playing') {
-                        warningText.innerText = "手が認識されていません";
-                        warningText.style.display = 'block';
+                    } else if (handDist < MIN_HAND_DIST) {
+                        overlayDesc.innerHTML = "人差し指を立てて、画面に向けてください。<br><br><span style='color:#ff3b3b; font-size:1.5rem; background:rgba(0,0,0,0.5); padding:10px;'>❌ 遠すぎます！もう少し近づいてください</span>";
+                        actionBtn.style.display = 'none';
+                    } else {
+                        overlayDesc.innerHTML = "人差し指を立てて、画面に向けてください。<br><br><span style='color:#4CAF50; font-size:1.5rem; background:rgba(0,0,0,0.5); padding:10px;'>🟢 OK！バッチリです。<br>この距離感で水色の線を使って打ち返します。</span>";
+                        actionBtn.style.display = 'block'; actionBtn.disabled = false;
+                        
+                        canvasCtx.save();
+                        canvasCtx.beginPath();
+                        canvasCtx.moveTo(p1.x, p1.y); canvasCtx.lineTo(p2.x, p2.y);
+                        canvasCtx.strokeStyle = "#00ffff"; 
+                        canvasCtx.lineWidth = Math.max(5, handDist * 100); 
+                        canvasCtx.lineCap = "round"; canvasCtx.stroke();
+                        canvasCtx.restore();
                     }
+                } 
+                else if (gameState === 'playing') {
+                    if (handDist > MAX_HAND_DIST) { currentHandValid = false; currentWarningMsg = "近すぎます！もう少し離れてください"; } 
+                    else if (handDist < MIN_HAND_DIST) { currentHandValid = false; currentWarningMsg = "遠すぎます！もう少し近づいてください"; } 
+                    else if (center.y < PLAY_AREA_LINE) { currentHandValid = false; currentWarningMsg = "ラインより下で打ち返してください！"; }
+                    else { currentHandValid = true; currentWarningMsg = ""; }
+                }
+            } else {
+                isHandTracked = false;
+                currentHandValid = false;
+                handVelocity = { vx:0, vy:0 };
+                if (gameState === 'calibration') {
+                    overlayDesc.innerHTML = "人差し指を立てて、画面に向けてください。<br><br><span style='color:#ffff00; font-size:1.5rem; background:rgba(0,0,0,0.5); padding:10px;'>手が認識されていません</span>";
+                    actionBtn.style.display = 'none';
+                } else if (gameState === 'playing' && currentWarningMsg !== "落下ペナルティ: -500点") {
+                    currentWarningMsg = "手が認識されていません";
                 }
             }
-            canvasCtx.restore();
         }
 
-        // --- ゲームフロー管理 ---
+        // --- 画面フロー管理 ---
         function showModeSelection() {
             gameState = 'select';
             overlayScreen.style.display = 'flex';
-            overlayScreen.style.background = 'rgba(0,0,0,0.85)'; // 暗い背景に戻す
+            overlayScreen.style.background = 'rgba(0,0,0,0.85)';
             overlayTitle.innerText = "モードを選択してください";
-            overlayDesc.style.display = 'none';
-            modeSelection.style.display = 'flex';
-            retryBtn.style.display = 'none';
-            actionBtn.style.display = 'none';
-            uiLayer.style.display = 'none';
-            warningText.style.display = 'none';
+            overlayDesc.style.display = 'none'; modeSelection.style.display = 'flex';
+            retryBtn.style.display = 'none'; actionBtn.style.display = 'none';
+            uiLayer.style.display = 'none'; warningText.style.display = 'none';
             if (animationId) cancelAnimationFrame(animationId);
             clearInterval(gameTimer);
         }
 
-        // 調整（チュートリアル）フェーズの開始
         function startCalibration(mode) {
-            gameMode = mode;
-            gameState = 'calibration';
-            
-            // 背景を薄くして、自分のカメラ映像を見えやすくする
+            gameMode = mode; gameState = 'calibration';
             overlayScreen.style.background = 'rgba(0,0,0,0.4)';
-            
             overlayTitle.innerText = "距離の調整・準備";
             overlayDesc.innerHTML = "人差し指を立てて、画面に向けてください。<br>手を認識しています...";
-            overlayDesc.style.display = 'block';
-            modeSelection.style.display = 'none';
-            
-            actionBtn.innerText = "この距離でゲームスタート";
-            actionBtn.style.display = 'none'; // 正しい距離になるまで隠す
+            overlayDesc.style.display = 'block'; modeSelection.style.display = 'none';
+            actionBtn.innerText = "この距離でゲームスタート"; actionBtn.style.display = 'none'; 
         }
 
-        // アクションボタン（準備完了）を押した時
-        actionBtn.addEventListener('click', () => {
-            if (gameState === 'calibration') {
-                startPlaying();
-            }
-        });
+        actionBtn.addEventListener('click', () => { if (gameState === 'calibration') startPlaying(); });
 
         function startPlaying() {
             gameState = 'playing';
-            overlayScreen.style.display = 'none';
-            uiLayer.style.display = 'flex';
-            score = 0;
-            scoreEl.innerText = score;
-            warningText.style.display = 'none';
-            
-            initBlocks();
-            resetBall();
+            overlayScreen.style.display = 'none'; uiLayer.style.display = 'flex';
+            score = 0; scoreEl.innerText = score; warningText.style.display = 'none';
+            initBlocks(); resetBall();
 
             if (gameMode === 'basic') {
                 lives = 3; timeLeft = 0; 
@@ -425,8 +422,7 @@
                 timeLeft = 45; 
                 rightInfo.innerText = "Time: " + timeLeft + "s"; infoCenter.innerText = "タイムアタック";
                 gameTimer = setInterval(() => {
-                    timeLeft--;
-                    rightInfo.innerText = "Time: " + timeLeft + "s";
+                    timeLeft--; rightInfo.innerText = "Time: " + timeLeft + "s";
                     if (timeLeft <= 0) gameOver(); 
                 }, 1000);
             }
@@ -434,55 +430,28 @@
         }
 
         function gameClear() {
-            gameState = 'result';
-            clearInterval(gameTimer);
-            let timeBonus = Math.max(0, (120 - timeLeft) * 10);
-            score += timeBonus;
-            
-            overlayScreen.style.display = 'flex';
-            overlayScreen.style.background = 'rgba(0,0,0,0.85)';
+            gameState = 'result'; clearInterval(gameTimer);
+            let timeBonus = Math.max(0, (120 - timeLeft) * 10); score += timeBonus;
+            overlayScreen.style.display = 'flex'; overlayScreen.style.background = 'rgba(0,0,0,0.85)';
             overlayTitle.innerText = "🎉 GAME CLEAR! 🎉";
             overlayDesc.innerHTML = `全ブロック破壊！<br>タイムボーナス: +${timeBonus}<br><br>最終スコア: ${score}点`;
-            overlayDesc.style.display = 'block';
-            modeSelection.style.display = 'none';
-            retryBtn.style.display = 'block';
+            overlayDesc.style.display = 'block'; modeSelection.style.display = 'none'; retryBtn.style.display = 'block';
         }
 
         function gameOver() {
-            gameState = 'result';
-            clearInterval(gameTimer);
-            
-            overlayScreen.style.display = 'flex';
-            overlayScreen.style.background = 'rgba(0,0,0,0.85)';
-            if (gameMode === 'basic') {
-                overlayTitle.innerText = "GAME OVER";
-                overlayDesc.innerHTML = `無念...残機がなくなりました。<br>スコア: ${score}点`;
-            } else {
-                overlayTitle.innerText = "タイムアップ！";
-                overlayDesc.innerHTML = `45秒間よく頑張りました！<br>最終スコア: ${score}点`;
-            }
-            overlayDesc.style.display = 'block';
-            modeSelection.style.display = 'none';
-            retryBtn.style.display = 'block';
+            gameState = 'result'; clearInterval(gameTimer);
+            overlayScreen.style.display = 'flex'; overlayScreen.style.background = 'rgba(0,0,0,0.85)';
+            if (gameMode === 'basic') { overlayTitle.innerText = "GAME OVER"; overlayDesc.innerHTML = `無念...残機がなくなりました。<br>スコア: ${score}点`; } 
+            else { overlayTitle.innerText = "タイムアップ！"; overlayDesc.innerHTML = `45秒間よく頑張りました！<br>最終スコア: ${score}点`; }
+            overlayDesc.style.display = 'block'; modeSelection.style.display = 'none'; retryBtn.style.display = 'block';
         }
 
-        const hands = new Hands({locateFile: (file) => {
-            return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
-        }});
+        const hands = new Hands({locateFile: (file) => { return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`; }});
         hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
         hands.onResults(onResults);
 
-        const camera = new Camera(videoElement, {
-            onFrame: async () => { await hands.send({image: videoElement}); },
-            width: 800, height: 600
-        });
-
-        camera.start().then(() => {
-            showModeSelection();
-        }).catch(err => { 
-            alert("カメラの起動に失敗しました。権限を確認してください。"); 
-        });
-
+        const camera = new Camera(videoElement, { onFrame: async () => { await hands.send({image: videoElement}); }, width: 800, height: 600 });
+        camera.start().then(() => { showModeSelection(); }).catch(err => { alert("カメラの起動に失敗しました。権限を確認してください。"); });
     </script>
 </body>
 </html>

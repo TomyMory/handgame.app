@@ -80,8 +80,13 @@
                 </div>
             </div>
             
-            <button id="action-btn" class="action" style="display: none;">ゲームスタート</button>
-            <button id="retry-btn" class="action" style="display: none;" onclick="showModeSelection()">モード選択へ戻る</button>
+            <button id="action-btn" class="action" style="display: none;">この距離でゲームスタート</button>
+            
+            <!-- ★ 修正: リザルト画面用のボタンを分割・追加 ★ -->
+            <div id="result-buttons" class="btn-group" style="display: none; justify-content: center;">
+                <button id="restart-btn" class="action" onclick="startCalibration(gameMode)">もう一度遊ぶ</button>
+                <button id="retry-btn" class="action" style="background-color: #7f8c8d;" onclick="showModeSelection()">モード選択へ戻る</button>
+            </div>
         </div>
     </div>
 
@@ -94,7 +99,7 @@
         const overlayDesc = document.getElementById('overlay-desc');
         const modeSelection = document.getElementById('mode-selection');
         const actionBtn = document.getElementById('action-btn');
-        const retryBtn = document.getElementById('retry-btn');
+        const resultButtons = document.getElementById('result-buttons');
         const uiLayer = document.getElementById('ui-layer');
         const warningText = document.getElementById('warning-text');
         const scoreEl = document.getElementById('score');
@@ -175,7 +180,6 @@
             canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
             canvasCtx.fillStyle = "#111"; canvasCtx.fillRect(0, 0, canvasElement.width, canvasElement.height);
 
-            // ★ フィールドのアウトライン（枠線）を描画 ★
             canvasCtx.strokeStyle = "rgba(255, 255, 255, 0.4)";
             canvasCtx.lineWidth = 6;
             canvasCtx.strokeRect(3, 3, canvasElement.width - 6, canvasElement.height - 6);
@@ -226,11 +230,9 @@
                 canvasCtx.lineCap = "round"; canvasCtx.stroke();
             }
 
-            // ボールの描画
             canvasCtx.beginPath(); canvasCtx.arc(ball.x, ball.y, ball.radius, 0, Math.PI * 2);
             canvasCtx.fillStyle = "#fff";
             
-            // スマッシュ判定
             let isSmash = Math.abs(ball.vy) > ball.speed * 1.5;
             if (isSmash) { 
                 canvasCtx.fillStyle = "#ff3b3b"; canvasCtx.shadowBlur = 10; canvasCtx.shadowColor = "red"; 
@@ -240,15 +242,11 @@
             canvasCtx.fill(); 
             canvasCtx.shadowBlur = 0; 
 
-            // ★ SMASH!! テキストの描画 ★
             if (isSmash) {
-                canvasCtx.fillStyle = "#ffeb3b"; // 黄色
-                canvasCtx.font = "bold italic 28px sans-serif";
-                canvasCtx.shadowBlur = 5;
-                canvasCtx.shadowColor = "black";
-                // ボールの少し上に追従して表示
+                canvasCtx.fillStyle = "#ffeb3b"; canvasCtx.font = "bold italic 28px sans-serif";
+                canvasCtx.shadowBlur = 5; canvasCtx.shadowColor = "black";
                 canvasCtx.fillText("SMASH!!", ball.x + 15, ball.y - 15);
-                canvasCtx.shadowBlur = 0; // リセット
+                canvasCtx.shadowBlur = 0; 
             }
             
             if (currentWarningMsg !== "") {
@@ -352,24 +350,38 @@
             }
         }
 
+        // --- ★ 修正: 画面遷移のフロー ★ ---
         function showModeSelection() {
             gameState = 'select'; overlayScreen.style.display = 'flex'; overlayScreen.style.background = 'rgba(0,0,0,0.85)';
-            overlayTitle.innerText = "モードを選択してください"; overlayDesc.style.display = 'none'; modeSelection.style.display = 'flex';
-            retryBtn.style.display = 'none'; actionBtn.style.display = 'none'; uiLayer.style.display = 'none'; warningText.style.display = 'none';
+            overlayTitle.innerText = "モードを選択してください"; overlayDesc.style.display = 'none'; 
+            modeSelection.style.display = 'flex';
+            
+            // バグ修正: 不必要なボタンを確実に隠す
+            actionBtn.style.display = 'none'; 
+            resultButtons.style.display = 'none'; 
+            
+            uiLayer.style.display = 'none'; warningText.style.display = 'none';
             if (animationId) cancelAnimationFrame(animationId); clearInterval(gameTimer);
         }
 
         function startCalibration(mode) {
             gameMode = mode; gameState = 'calibration'; overlayScreen.style.background = 'rgba(0,0,0,0.4)';
             overlayTitle.innerText = "距離の調整・準備"; overlayDesc.innerHTML = "人差し指を立てて、画面に向けてください。<br>手を認識しています...";
-            overlayDesc.style.display = 'block'; modeSelection.style.display = 'none';
+            overlayDesc.style.display = 'block'; 
+            modeSelection.style.display = 'none';
+            resultButtons.style.display = 'none'; // リザルトボタンを隠す
+            
             actionBtn.innerText = "この距離でゲームスタート"; actionBtn.style.display = 'none'; 
         }
 
         actionBtn.addEventListener('click', () => { if (gameState === 'calibration') startPlaying(); });
 
         function startPlaying() {
-            gameState = 'playing'; overlayScreen.style.display = 'none'; uiLayer.style.display = 'flex';
+            gameState = 'playing'; 
+            overlayScreen.style.display = 'none'; 
+            actionBtn.style.display = 'none'; // バグ修正: プレイ中に消す
+            uiLayer.style.display = 'flex';
+            
             score = 0; scoreEl.innerText = score; warningText.style.display = 'none';
             initBlocks(); resetBall();
 
@@ -392,7 +404,11 @@
             overlayScreen.style.display = 'flex'; overlayScreen.style.background = 'rgba(0,0,0,0.85)';
             overlayTitle.innerText = "🎉 GAME CLEAR! 🎉";
             overlayDesc.innerHTML = `全ブロック破壊！<br>タイムボーナス: +${timeBonus}<br><br>最終スコア: ${score}点`;
-            overlayDesc.style.display = 'block'; modeSelection.style.display = 'none'; retryBtn.style.display = 'block';
+            overlayDesc.style.display = 'block'; 
+            
+            // ★ 修正: リザルト用ボタンのみ表示 ★
+            actionBtn.style.display = 'none';
+            resultButtons.style.display = 'flex';
         }
 
         function gameOver() {
@@ -400,7 +416,11 @@
             overlayScreen.style.display = 'flex'; overlayScreen.style.background = 'rgba(0,0,0,0.85)';
             if (gameMode === 'basic') { overlayTitle.innerText = "GAME OVER"; overlayDesc.innerHTML = `無念...残機がなくなりました。<br>スコア: ${score}点`; } 
             else { overlayTitle.innerText = "タイムアップ！"; overlayDesc.innerHTML = `45秒間よく頑張りました！<br>最終スコア: ${score}点`; }
-            overlayDesc.style.display = 'block'; modeSelection.style.display = 'none'; retryBtn.style.display = 'block';
+            overlayDesc.style.display = 'block'; 
+            
+            // ★ 修正: リザルト用ボタンのみ表示 ★
+            actionBtn.style.display = 'none';
+            resultButtons.style.display = 'flex';
         }
 
         const hands = new Hands({locateFile: (file) => { return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`; }});
